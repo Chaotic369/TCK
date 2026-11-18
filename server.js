@@ -309,24 +309,37 @@ const PAGE = String.raw`<!doctype html><meta charset=utf-8><meta name=viewport c
 <style>
 *{box-sizing:border-box}
 html,body{height:100%;margin:0;overflow:hidden;background:#0b0f1a;color:#dfe6ff;font:11px/1.3 ui-monospace,Menlo,Consolas,monospace}
-body{display:grid;grid-template-rows:minmax(0,3fr) minmax(0,2fr);gap:6px;padding:6px;height:100vh;height:100dvh}
-#pg{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));grid-auto-rows:44px;gap:4px;overflow:auto;align-content:start}
+body{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:6px;height:100vh;height:100dvh}
+#pg{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;min-height:0;min-width:0}
 .p{border:1px solid #243056;background:#121a2e;border-radius:4px;padding:3px 7px;display:flex;flex-direction:column;justify-content:center;min-width:0;white-space:nowrap;overflow:hidden}
-.p span{font-size:9px;opacity:.8;overflow:hidden;text-overflow:ellipsis}
-.p b{font-size:16px;line-height:1.2}
-#lg{background:#121a2e;border:1px solid #243056;border-radius:6px;padding:6px 8px;overflow:auto;font-size:10px}
+.p span{font-size:clamp(9px,.9vw,13px);opacity:.8;overflow:hidden;text-overflow:ellipsis}
+.p b{font-size:clamp(14px,1.8vw,26px);line-height:1.2}
+#lg{background:#121a2e;border:1px solid #243056;border-radius:6px;padding:6px 8px;overflow:auto;font-size:11px;min-height:0;min-width:0}
 #lg div{white-space:nowrap}
 #lg h6{margin:6px 0 2px;color:#8d9ac8;font-size:9px;letter-spacing:.08em}
 .ok{color:#4ade80}.warn{color:#facc15}.bad{color:#f87171}.dim{color:#7d8ab5}
+@media(max-width:600px){body{grid-template-columns:1fr;grid-template-rows:minmax(0,1fr) minmax(0,1fr)}}
 </style>
 <body><div id=pg></div><div id=lg></div>
 <script>
 const t = new URLSearchParams(location.search).get('token') || '';
-let prev = null, lr = 0, br = 0;
+let prev = null, lr = 0, br = 0, np = 37;
 const f = n => Number(n).toLocaleString();
 const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
 const dur = s => { s = Math.max(0, Math.round(s)); return Math.floor(s / 3600) + 'h ' + Math.floor(s % 3600 / 60) + 'm ' + (s % 60) + 's'; };
 const ln = (k, v) => '<div><span class=dim>' + k + '</span> ' + v + '</div>';
+function fit() {
+  const r = pg.getBoundingClientRect();
+  let best = 1, bs = -1e9, c, rows, cw, ch, sc;
+  for (c = 1; c <= 10; c++) {
+    rows = Math.ceil(np / c); cw = (r.width - (c - 1) * 4) / c; ch = (r.height - (rows - 1) * 4) / rows;
+    sc = -Math.abs(Math.log(cw / ch / 2.2)) - (cw < 90 || ch < 32 ? 10 : 0);
+    if (sc > bs) { bs = sc; best = c; }
+  }
+  pg.style.gridTemplateColumns = 'repeat(' + best + ',minmax(0,1fr))';
+  pg.style.gridTemplateRows = 'repeat(' + Math.ceil(np / best) + ',minmax(0,1fr))';
+}
+addEventListener('resize', fit);
 async function go() {
   try {
     const r = await fetch('/status?token=' + encodeURIComponent(t), { cache: 'no-store' });
@@ -341,6 +354,7 @@ async function go() {
     const st = j.feedState, sc = st === 'LIVE' ? 'ok' : st === 'BACKFILLING' ? 'warn' : 'bad';
     const eta = b.active && br > 0 ? dur((b.totalChunks - b.doneChunks) / br) : '-';
     let cells = '', rows = '';
+    np = Object.keys(j.lastTickTime).length;
     for (const p in j.lastTickTime) {
       const a = j.lastTickTime[p], age = a ? now - a : null, pend = bp[p] || 0;
       const cov = j.elapsed ? Math.min(100, j.filled[p] / j.elapsed * 100) : 0;
@@ -348,7 +362,7 @@ async function go() {
       cells += '<div class="p ' + (!j.wsConnected || pend > 0 ? 'bad' : 'ok') + '"><span>' + p + '</span><b>' + f(j.filled[p]) + '</b></div>';
       rows += ln(p, '<span class=' + ac + '>' + (age === null ? '-' : Math.round(age) + 's') + '</span> L ' + f(j.liveN[p]) + ' B ' + f(j.bfN[p]) + ' pend ' + pend + ' cov ' + cov.toFixed(0) + '%');
     }
-    pg.innerHTML = cells;
+    pg.innerHTML = cells; fit();
     lg.innerHTML = '<h6>STATUS</h6>' +
       ln('FEED', '<span class=' + sc + '>' + st + '</span> WS ' + (j.wsConnected ? 'up' : 'DOWN') + ' subs ' + j.subscribedCount + '/' + j.totalPairs) +
       ln('UPTIME', dur(j.uptime) + ' backfill runs ' + j.backfillSeq) +
