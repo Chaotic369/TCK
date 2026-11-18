@@ -303,31 +303,50 @@ function sendJson(res, code, obj) {
 
 const PAGE = String.raw`<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Tick server</title>
 <style>
-body{background:#0b0f1a;color:#dfe6ff;font:12px/1.4 ui-monospace,Menlo,Consolas,monospace;margin:0;padding:12px}
-.g{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:8px;margin-bottom:10px}
-.c{background:#121a2e;border:1px solid #243056;border-radius:6px;padding:8px;margin-bottom:0}
-.c i{font-style:normal;color:#8d9ac8;font-size:10px;letter-spacing:.08em}.c b{display:block;font-size:17px;margin:2px 0}
-.bar{height:8px;background:#1b2542;border-radius:4px;overflow:hidden;margin:4px 0}.bar div{height:100%}
-td .bar{height:4px;margin:2px 0 0}table{border-collapse:collapse;width:100%}
-td,th{padding:3px 6px;text-align:right;border-bottom:1px solid #1b2542}th{color:#8d9ac8}td:first-child,th:first-child{text-align:left}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;overflow:hidden;background:#0b0f1a;color:#dfe6ff;font:11px/1.3 ui-monospace,Menlo,Consolas,monospace}
+body{display:grid;grid-template-rows:auto 92px minmax(0,1fr);gap:6px;padding:6px;height:100vh;height:100dvh}
+.c{background:#121a2e;border:1px solid #243056;border-radius:6px;padding:5px 8px;min-width:0;overflow:hidden}
+.c i{font-style:normal;color:#8d9ac8;font-size:9px;letter-spacing:.08em;white-space:nowrap}
+.c b{display:block;font-size:15px;line-height:1.2;white-space:nowrap}
+.d{color:#7d8ab5;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.g{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:6px}
+.bar{height:3px;background:#1b2542;border-radius:2px;margin:2px 0}.bar div{height:100%}
+.m{display:grid;grid-template-columns:1fr 1.4fr;gap:6px;min-height:0}
+#sw{position:relative}#sp{position:absolute;left:6px;top:16px;width:calc(100% - 12px);height:calc(100% - 20px)}
+#ev div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:10px}
+#pg{display:grid;gap:4px;grid-auto-rows:1fr;min-height:0}
+.p{border:1px solid #243056;border-radius:4px;padding:2px 6px;overflow:hidden;min-width:0;display:flex;flex-direction:column;justify-content:center;white-space:nowrap}
+.p span{float:right}
 .ok{color:#4ade80}.warn{color:#facc15}.bad{color:#f87171}.dim{color:#7d8ab5}
+@media(max-width:600px){.g{grid-template-columns:repeat(4,1fr)}.c{padding:3px 5px}.c i{font-size:7px}.c b{font-size:12px}.d{font-size:8px}.p{font-size:9px;padding:2px 4px}body{grid-template-rows:auto 70px minmax(0,1fr)}}
 </style>
 <body><div class=g id=cards></div>
-<div class=c style="margin-bottom:10px"><i>LIVE TICKS / SEC</i><canvas id=sp width=600 height=60 style="width:100%;height:60px;display:block"></canvas></div>
-<div class=c style="margin-bottom:10px;overflow-x:auto"><table id=tb></table></div>
-<div class=c id=ev></div>
+<div class=m><div class=c id=sw><i>LIVE TICKS / SEC (last 5 min)</i><canvas id=sp></canvas></div><div class=c id=ev></div></div>
+<div id=pg></div>
 <script>
 const t = new URLSearchParams(location.search).get('token') || '';
-let prev = null, lr = 0, br = 0, hist = [];
+let prev = null, lr = 0, br = 0, hist = [], np = 37;
 const f = n => Number(n).toLocaleString();
+const k = n => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e4 ? (n / 1e3).toFixed(1) + 'k' : n;
 const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
-const bar = (p, c) => '<div class=bar><div style="width:' + Math.min(100, Math.max(0, p)) + '%;background:' + (c || '#2dd4bf') + '"></div></div>';
-const card = (k, v, x) => '<div class=c><i>' + k + '</i><b>' + v + '</b>' + (x || '') + '</div>';
+const card = (n, v, d, pct, col) => '<div class=c><i>' + n + '</i><b>' + v + '</b>' + (pct == null ? '' : '<div class=bar><div style="width:' + Math.min(100, Math.max(0, pct)) + '%;background:' + (col || '#2dd4bf') + '"></div></div>') + '<div class=d>' + (d || '&nbsp;') + '</div></div>';
 const dur = s => { s = Math.max(0, Math.round(s)); return Math.floor(s / 3600) + 'h ' + Math.floor(s % 3600 / 60) + 'm ' + (s % 60) + 's'; };
+function fit() {
+  const r = pg.getBoundingClientRect(), m = innerWidth < 600, mw = m ? 115 : 150, mh = m ? 26 : 30;
+  let best = 1, bs = -1e9, c, rows, cw, ch, sc;
+  for (c = 1; c <= 12; c++) {
+    rows = Math.ceil(np / c); cw = (r.width - (c - 1) * 4) / c; ch = (r.height - (rows - 1) * 4) / rows;
+    sc = (cw >= mw && ch >= mh) ? 100 - Math.abs(Math.log(cw / ch / 4)) : Math.min(cw / mw, ch / mh);
+    if (sc > bs) { bs = sc; best = c; }
+  }
+  pg.style.gridTemplateColumns = 'repeat(' + best + ',minmax(0,1fr))';
+}
+addEventListener('resize', fit);
 async function go() {
   try {
     const r = await fetch('/status?token=' + encodeURIComponent(t), { cache: 'no-store' });
-    if (r.status === 401) { cards.innerHTML = card('AUTH', '401', '<div class=dim>open as /?token=YOUR_TOKEN</div>'); return; }
+    if (r.status === 401) { cards.innerHTML = card('AUTH', '401', 'open as /?token=YOUR_TOKEN'); return; }
     const j = await r.json(), now = Date.now() / 1000, b = j.backfill, left = j.activeDayEpoch + 86400 - now;
     if (prev && now > prev.t) {
       const dt = now - prev.t, inst = Math.max(0, (b.doneChunks - prev.chunks) / dt);
@@ -339,28 +358,27 @@ async function go() {
     const st = j.feedState, sc = st === 'LIVE' ? 'ok' : st === 'BACKFILLING' ? 'warn' : 'bad';
     const eta = b.active && br > 0 ? dur((b.totalChunks - b.doneChunks) / br) : '-';
     cards.innerHTML =
-      card('FEED', '<span class=' + sc + '>' + st + '</span>', '<div class=dim>WS ' + (j.wsConnected ? 'up' : 'DOWN') + ' | subs ' + j.subscribedCount + '/' + j.totalPairs + '</div>') +
-      card('UPTIME', dur(j.uptime), '<div class=dim>backfill runs done ' + j.backfillSeq + '</div>') +
-      card('MEMORY', j.rssMB + ' MB', bar(j.rssMB / 5.12, j.rssMB > 400 ? '#f87171' : '#2dd4bf') + '<div class=dim>of 512 MB</div>') +
-      card('CPU', j.cpuPct + '%', bar(j.cpuPct * 10, j.cpuPct > 8 ? '#f87171' : '#2dd4bf') + '<div class=dim>cap ~10% | loop lag ' + j.lagMs + 'ms</div>') +
-      card('LIVE TICKS', f(j.totalLive), '<div class=dim>' + lr.toFixed(1) + ' / sec (today)</div>') +
-      card('BACKFILLED TICKS', f(j.totalBf), '<div class=dim>' + f(b.doneChunks) + ' / ' + f(b.totalChunks) + ' chunks</div>') +
-      card('BACKFILL', b.active ? b.pct + '%' : 'idle', bar(b.pct, '#facc15') + '<div class=dim>' + br.toFixed(1) + ' chunks/s | ETA ' + eta + (b.active ? ' | ' + b.currentPair : '') + '</div>') +
-      card('DAY (05:30 IST)', Math.floor(j.elapsed / 864) + '%', bar(j.elapsed / 864) + '<div class=dim>reset in ' + dur(left) + '</div>');
+      card('FEED', '<span class=' + sc + '>' + st + '</span>', 'WS ' + (j.wsConnected ? 'up' : 'DOWN') + ' | subs ' + j.subscribedCount + '/' + j.totalPairs) +
+      card('UPTIME', dur(j.uptime), 'backfill runs done ' + j.backfillSeq) +
+      card('MEMORY', j.rssMB + ' MB', 'of 512 MB', j.rssMB / 5.12, j.rssMB > 400 ? '#f87171' : '') +
+      card('CPU', j.cpuPct + '%', 'cap ~10% | lag ' + j.lagMs + 'ms', j.cpuPct * 10, j.cpuPct > 8 ? '#f87171' : '') +
+      card('LIVE TICKS', f(j.totalLive), lr.toFixed(1) + ' / sec (today)') +
+      card('BACKFILLED TICKS', f(j.totalBf), f(b.doneChunks) + ' / ' + f(b.totalChunks) + ' chunks') +
+      card('BACKFILL', b.active ? b.pct + '% ' + b.currentPair : 'idle', br.toFixed(1) + ' chunks/s | ETA ' + eta, b.pct, '#facc15') +
+      card('DAY (05:30 IST)', Math.floor(j.elapsed / 864) + '%', 'reset in ' + dur(left), j.elapsed / 864);
+    sp.width = sp.clientWidth; sp.height = sp.clientHeight;
     const cx = sp.getContext('2d'), w = sp.width, h = sp.height, mx = Math.max(1, ...hist);
     cx.clearRect(0, 0, w, h); cx.strokeStyle = '#2dd4bf'; cx.beginPath();
     hist.forEach((v, i) => { const px = i / 149 * w, py = h - 2 - v / mx * (h - 6); if (i) cx.lineTo(px, py); else cx.moveTo(px, py); });
     cx.stroke();
-    let rows = '', tl = 0, tb2 = 0, tf = 0;
+    let cells = ''; np = Object.keys(j.lastTickTime).length;
     for (const p in j.lastTickTime) {
-      const a = j.lastTickTime[p], age = a ? now - a : null, cov = j.elapsed ? j.filled[p] / j.elapsed * 100 : 0;
+      const a = j.lastTickTime[p], age = a ? now - a : null, cov = j.elapsed ? Math.min(100, j.filled[p] / j.elapsed * 100) : 0;
       const ac = age === null ? 'dim' : age < 10 ? 'ok' : age < 60 ? 'warn' : 'bad';
-      tl += j.liveN[p]; tb2 += j.bfN[p]; tf += j.filled[p];
-      rows += '<tr><td>' + p + '</td><td>' + f(j.liveN[p]) + '</td><td>' + f(j.bfN[p]) + '</td><td>' + f(j.filled[p]) + '</td><td>' + cov.toFixed(1) + '%' + bar(cov) + '</td><td class=' + ac + '>' + (age === null ? '-' : Math.round(age) + 's') + '</td></tr>';
+      cells += '<div class=p style="background:linear-gradient(90deg,#14343c ' + cov + '%,#121a2e ' + cov + '%)"><div><b>' + p + '</b><span class=' + ac + '>' + (age === null ? '-' : Math.round(age) + 's') + '</span></div><div class=d>L ' + k(j.liveN[p]) + ' B ' + k(j.bfN[p]) + ' ' + cov.toFixed(0) + '%</div></div>';
     }
-    tb.innerHTML = '<tr><th>PAIR</th><th>LIVE</th><th>BACKFILLED</th><th>SECONDS FILLED</th><th>COVERAGE</th><th>LAST TICK</th></tr>' + rows +
-      '<tr><th>TOTAL</th><th>' + f(tl) + '</th><th>' + f(tb2) + '</th><th>' + f(tf) + '</th><th></th><th></th></tr>';
-    ev.innerHTML = '<i>EVENTS</i>' + j.recentEvents.slice(-10).reverse().map(e => '<div><span class=dim>' + e.ts.slice(11, 19) + '</span> ' + esc(e.type) + ' ' + esc(e.reason) + '</div>').join('');
+    pg.innerHTML = cells; fit();
+    ev.innerHTML = '<i>EVENTS</i>' + j.recentEvents.slice(-5).reverse().map(e => '<div><span class=dim>' + e.ts.slice(11, 19) + '</span> ' + esc(e.type) + ' ' + esc(e.reason) + '</div>').join('');
   } catch (e) { cards.innerHTML = card('ERROR', esc(e.message)); }
 }
 go(); setInterval(go, 2000);
