@@ -39,10 +39,13 @@ process.on("unhandledRejection", e => log("UNHANDLED_REJECTION", e && e.stack ? 
 // ── buffers: one slot per second, -1 = empty ──
 let activeDayEpoch = calcDayEpoch(nowSec());
 const dayTicks = {}, preTicks = {}, lastTickTime = {};
+const filled = {}, liveN = {}, bfN = {};
+let totalLive = 0, totalBf = 0;
 for (const p of ALL_PAIRS) {
   dayTicks[p] = new Float64Array(DAY_SECS).fill(-1);
   preTicks[p] = new Float64Array(PRE_ROLL_SECS).fill(-1);
   lastTickTime[p] = null;
+  filled[p] = liveN[p] = bfN[p] = 0;
 }
 
 function checkRollover() {
@@ -53,23 +56,41 @@ function checkRollover() {
     if (adjacent) preTicks[p].set(dayTicks[p].subarray(DAY_SECS - PRE_ROLL_SECS, DAY_SECS));
     else preTicks[p].fill(-1);
     dayTicks[p].fill(-1);
+    filled[p] = liveN[p] = bfN[p] = 0;
   }
+  totalLive = totalBf = 0;
   log("ROLLOVER", `05:30 IST rollover ${activeDayEpoch} -> ${cur}`);
   activeDayEpoch = cur;
 }
 setInterval(checkRollover, 1000);
 
-function recordTick(pair, epochSec, price) {
+function recordTick(pair, epochSec, price, src) {
   if (!PAIR_SET.has(pair)) return;
   const ts = Math.floor(Number(epochSec)), val = Number(price);
   if (!Number.isFinite(ts) || !Number.isFinite(val)) return;
   checkRollover();
   const idx = ts - activeDayEpoch;
-  if (idx >= 0 && idx < DAY_SECS) dayTicks[pair][idx] = val;
-  else if (idx >= -PRE_ROLL_SECS && idx < 0) preTicks[pair][PRE_ROLL_SECS + idx] = val;
-  else return;
+  let wasEmpty;
+  if (idx >= 0 && idx < DAY_SECS) {
+    wasEmpty = dayTicks[pair][idx] === -1;
+    if (wasEmpty) filled[pair]++;
+    dayTicks[pair][idx] = val;
+  } else if (idx >= -PRE_ROLL_SECS && idx < 0) {
+    wasEmpty = preTicks[pair][PRE_ROLL_SECS + idx] === -1;
+    preTicks[pair][PRE_ROLL_SECS + idx] = val;
+  } else return;
   lastTickTime[pair] = Math.max(lastTickTime[pair] || 0, ts);
+  if (src === "L") { liveN[pair]++; totalLive++; } else if (src === "B" && wasEmpty) { bfN[pair]++; totalBf++; }
 }
+
+// ── load sampler: CPU % of one core (free tier cap is about 10%) and event-loop lag ──
+let cpuPct = 0, lagMs = 0, lagMax = 0, prevCpu = process.cpuUsage(), prevAt = Date.now(), lagPrev = Date.now();
+setInterval(() => { const n = Date.now(); lagMax = Math.max(lagMax, n - lagPrev - 1000); lagPrev = n; }, 1000).unref();
+setInterval(() => {
+  const n = Date.now(), c = process.cpuUsage();
+  cpuPct = ((c.user - prevCpu.user) + (c.system - prevCpu.system)) / ((n - prevAt) * 1000) * 100;
+  prevCpu = c; prevAt = n; lagMs = lagMax; lagMax = 0;
+}, 5000).unref();
 
 // ── FX weekly hours (crypto and 1HZ run 24x7) ──
 function fxClosedAt(sec) {
@@ -175,7 +196,7 @@ async function runBackfill(reason, forceFromSec) {
           if (res.ok) break;
         }
         if (res.closedMarket) closed[t.pair] = true;
-        for (const ts in res.map) recordTick(t.pair, +ts, res.map[ts]);
+        for (const ts in res.map) recordTick(t.pair, +ts, res.map[ts], "B");
         if (res.ok && t.e < targetDay) preBackfillDay[t.pair] = targetDay;
         await sleep(300);
       }
@@ -248,7 +269,7 @@ function connectLiveWs(isReconnect) {
       const msg = JSON.parse(raw.toString());
       if (msg.msg_type === "tick" && msg.tick) {
         subscribed.add(msg.tick.symbol);
-        recordTick(msg.tick.symbol, msg.tick.epoch, msg.tick.quote);
+        recordTick(msg.tick.symbol, msg.tick.epoch, msg.tick.quote, "L");
       } else if (msg.error && msg.echo_req && msg.echo_req.ticks && msg.error.code === "RateLimit") {
         const sym = msg.echo_req.ticks;
         setTimeout(() => {
@@ -281,20 +302,66 @@ function sendJson(res, code, obj) {
 }
 
 const PAGE = String.raw`<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Tick server</title>
-<body style="background:#0b0f1a;color:#dfe6ff;font:13px monospace;margin:12px"><pre id=o>loading...</pre>
+<style>
+body{background:#0b0f1a;color:#dfe6ff;font:12px/1.4 ui-monospace,Menlo,Consolas,monospace;margin:0;padding:12px}
+.g{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:8px;margin-bottom:10px}
+.c{background:#121a2e;border:1px solid #243056;border-radius:6px;padding:8px;margin-bottom:0}
+.c i{font-style:normal;color:#8d9ac8;font-size:10px;letter-spacing:.08em}.c b{display:block;font-size:17px;margin:2px 0}
+.bar{height:8px;background:#1b2542;border-radius:4px;overflow:hidden;margin:4px 0}.bar div{height:100%}
+td .bar{height:4px;margin:2px 0 0}table{border-collapse:collapse;width:100%}
+td,th{padding:3px 6px;text-align:right;border-bottom:1px solid #1b2542}th{color:#8d9ac8}td:first-child,th:first-child{text-align:left}
+.ok{color:#4ade80}.warn{color:#facc15}.bad{color:#f87171}.dim{color:#7d8ab5}
+</style>
+<body><div class=g id=cards></div>
+<div class=c style="margin-bottom:10px"><i>LIVE TICKS / SEC</i><canvas id=sp width=600 height=60 style="width:100%;height:60px;display:block"></canvas></div>
+<div class=c style="margin-bottom:10px;overflow-x:auto"><table id=tb></table></div>
+<div class=c id=ev></div>
 <script>
 const t = new URLSearchParams(location.search).get('token') || '';
+let prev = null, lr = 0, br = 0, hist = [];
+const f = n => Number(n).toLocaleString();
+const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+const bar = (p, c) => '<div class=bar><div style="width:' + Math.min(100, Math.max(0, p)) + '%;background:' + (c || '#2dd4bf') + '"></div></div>';
+const card = (k, v, x) => '<div class=c><i>' + k + '</i><b>' + v + '</b>' + (x || '') + '</div>';
+const dur = s => { s = Math.max(0, Math.round(s)); return Math.floor(s / 3600) + 'h ' + Math.floor(s % 3600 / 60) + 'm ' + (s % 60) + 's'; };
 async function go() {
   try {
     const r = await fetch('/status?token=' + encodeURIComponent(t), { cache: 'no-store' });
-    if (r.status === 401) { o.textContent = '401 - open this page as /?token=YOUR_TOKEN'; return; }
-    const j = await r.json(), n = Date.now() / 1000, b = j.backfill, left = j.activeDayEpoch + 86400 - n;
-    let s = j.feedState + '  ws:' + (j.wsConnected ? 'up' : 'DOWN') + '  subs:' + j.subscribedCount + '/' + j.totalPairs + '  uptime:' + j.uptime + 's  rss:' + j.rssMB + 'MB\n';
-    s += 'backfill: ' + (b.active ? b.pct + '% (' + b.doneChunks + '/' + b.totalChunks + ') ' + b.currentPair : 'idle') + '  runs done:' + j.backfillSeq + '\n';
-    s += 'reset in ' + Math.floor(left / 3600) + 'h ' + Math.floor(left % 3600 / 60) + 'm (05:30 IST)\n\n';
-    for (const p in j.lastTickTime) { const a = j.lastTickTime[p]; s += p.padEnd(11) + (a ? Math.round(n - a) + 's ago' : '-') + '\n'; }
-    o.textContent = s + '\n' + j.recentEvents.slice(-6).map(e => e.ts.slice(11, 19) + ' ' + e.type + ' ' + e.reason).join('\n');
-  } catch (e) { o.textContent = 'error: ' + e.message; }
+    if (r.status === 401) { cards.innerHTML = card('AUTH', '401', '<div class=dim>open as /?token=YOUR_TOKEN</div>'); return; }
+    const j = await r.json(), now = Date.now() / 1000, b = j.backfill, left = j.activeDayEpoch + 86400 - now;
+    if (prev && now > prev.t) {
+      const dt = now - prev.t, inst = Math.max(0, (b.doneChunks - prev.chunks) / dt);
+      lr = Math.max(0, (j.totalLive - prev.live) / dt);
+      br = br ? br * 0.7 + inst * 0.3 : inst;
+      hist.push(lr); if (hist.length > 150) hist.shift();
+    }
+    prev = { t: now, live: j.totalLive, chunks: b.doneChunks };
+    const st = j.feedState, sc = st === 'LIVE' ? 'ok' : st === 'BACKFILLING' ? 'warn' : 'bad';
+    const eta = b.active && br > 0 ? dur((b.totalChunks - b.doneChunks) / br) : '-';
+    cards.innerHTML =
+      card('FEED', '<span class=' + sc + '>' + st + '</span>', '<div class=dim>WS ' + (j.wsConnected ? 'up' : 'DOWN') + ' | subs ' + j.subscribedCount + '/' + j.totalPairs + '</div>') +
+      card('UPTIME', dur(j.uptime), '<div class=dim>backfill runs done ' + j.backfillSeq + '</div>') +
+      card('MEMORY', j.rssMB + ' MB', bar(j.rssMB / 5.12, j.rssMB > 400 ? '#f87171' : '#2dd4bf') + '<div class=dim>of 512 MB</div>') +
+      card('CPU', j.cpuPct + '%', bar(j.cpuPct * 10, j.cpuPct > 8 ? '#f87171' : '#2dd4bf') + '<div class=dim>cap ~10% | loop lag ' + j.lagMs + 'ms</div>') +
+      card('LIVE TICKS', f(j.totalLive), '<div class=dim>' + lr.toFixed(1) + ' / sec (today)</div>') +
+      card('BACKFILLED TICKS', f(j.totalBf), '<div class=dim>' + f(b.doneChunks) + ' / ' + f(b.totalChunks) + ' chunks</div>') +
+      card('BACKFILL', b.active ? b.pct + '%' : 'idle', bar(b.pct, '#facc15') + '<div class=dim>' + br.toFixed(1) + ' chunks/s | ETA ' + eta + (b.active ? ' | ' + b.currentPair : '') + '</div>') +
+      card('DAY (05:30 IST)', Math.floor(j.elapsed / 864) + '%', bar(j.elapsed / 864) + '<div class=dim>reset in ' + dur(left) + '</div>');
+    const cx = sp.getContext('2d'), w = sp.width, h = sp.height, mx = Math.max(1, ...hist);
+    cx.clearRect(0, 0, w, h); cx.strokeStyle = '#2dd4bf'; cx.beginPath();
+    hist.forEach((v, i) => { const px = i / 149 * w, py = h - 2 - v / mx * (h - 6); if (i) cx.lineTo(px, py); else cx.moveTo(px, py); });
+    cx.stroke();
+    let rows = '', tl = 0, tb2 = 0, tf = 0;
+    for (const p in j.lastTickTime) {
+      const a = j.lastTickTime[p], age = a ? now - a : null, cov = j.elapsed ? j.filled[p] / j.elapsed * 100 : 0;
+      const ac = age === null ? 'dim' : age < 10 ? 'ok' : age < 60 ? 'warn' : 'bad';
+      tl += j.liveN[p]; tb2 += j.bfN[p]; tf += j.filled[p];
+      rows += '<tr><td>' + p + '</td><td>' + f(j.liveN[p]) + '</td><td>' + f(j.bfN[p]) + '</td><td>' + f(j.filled[p]) + '</td><td>' + cov.toFixed(1) + '%' + bar(cov) + '</td><td class=' + ac + '>' + (age === null ? '-' : Math.round(age) + 's') + '</td></tr>';
+    }
+    tb.innerHTML = '<tr><th>PAIR</th><th>LIVE</th><th>BACKFILLED</th><th>SECONDS FILLED</th><th>COVERAGE</th><th>LAST TICK</th></tr>' + rows +
+      '<tr><th>TOTAL</th><th>' + f(tl) + '</th><th>' + f(tb2) + '</th><th>' + f(tf) + '</th><th></th><th></th></tr>';
+    ev.innerHTML = '<i>EVENTS</i>' + j.recentEvents.slice(-10).reverse().map(e => '<div><span class=dim>' + e.ts.slice(11, 19) + '</span> ' + esc(e.type) + ' ' + esc(e.reason) + '</div>').join('');
+  } catch (e) { cards.innerHTML = card('ERROR', esc(e.message)); }
 }
 go(); setInterval(go, 2000);
 </script>`;
@@ -326,7 +393,8 @@ const server = http.createServer((req, res) => {
       uptime: Math.floor(process.uptime()), lastRestart: startedAtIso, lastRestartEpoch: startedAtEpoch,
       activeDayEpoch, feedState: feedState(), wsConnected, subscribedCount: subscribed.size, totalPairs: ALL_PAIRS.length,
       backfill: backfillState, backfillSeq, serverScan: false, rssMB: Math.round(process.memoryUsage().rss / 1048576),
-      lastTickTime, recentEvents
+      lastTickTime, recentEvents, filled, liveN, bfN, totalLive, totalBf,
+      elapsed: Math.min(DAY_SECS, nowSec() - activeDayEpoch + 1), cpuPct: Math.round(cpuPct * 10) / 10, lagMs
     });
     return;
   }
