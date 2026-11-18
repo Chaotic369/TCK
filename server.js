@@ -280,6 +280,25 @@ function sendJson(res, code, obj) {
   res.end(JSON.stringify(obj));
 }
 
+const PAGE = String.raw`<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Tick server</title>
+<body style="background:#0b0f1a;color:#dfe6ff;font:13px monospace;margin:12px"><pre id=o>loading...</pre>
+<script>
+const t = new URLSearchParams(location.search).get('token') || '';
+async function go() {
+  try {
+    const r = await fetch('/status?token=' + encodeURIComponent(t), { cache: 'no-store' });
+    if (r.status === 401) { o.textContent = '401 - open this page as /?token=YOUR_TOKEN'; return; }
+    const j = await r.json(), n = Date.now() / 1000, b = j.backfill, left = j.activeDayEpoch + 86400 - n;
+    let s = j.feedState + '  ws:' + (j.wsConnected ? 'up' : 'DOWN') + '  subs:' + j.subscribedCount + '/' + j.totalPairs + '  uptime:' + j.uptime + 's  rss:' + j.rssMB + 'MB\n';
+    s += 'backfill: ' + (b.active ? b.pct + '% (' + b.doneChunks + '/' + b.totalChunks + ') ' + b.currentPair : 'idle') + '  runs done:' + j.backfillSeq + '\n';
+    s += 'reset in ' + Math.floor(left / 3600) + 'h ' + Math.floor(left % 3600 / 60) + 'm (05:30 IST)\n\n';
+    for (const p in j.lastTickTime) { const a = j.lastTickTime[p]; s += p.padEnd(11) + (a ? Math.round(n - a) + 's ago' : '-') + '\n'; }
+    o.textContent = s + '\n' + j.recentEvents.slice(-6).map(e => e.ts.slice(11, 19) + ' ' + e.type + ' ' + e.reason).join('\n');
+  } catch (e) { o.textContent = 'error: ' + e.message; }
+}
+go(); setInterval(go, 2000);
+</script>`;
+
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, `http://${req.headers.host || "localhost"}`), pathname = u.pathname;
   res.setHeader("Access-Control-Allow-Origin", process.env.CORS_ORIGIN || "*");
@@ -290,6 +309,11 @@ const server = http.createServer((req, res) => {
   if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
   if (req.method !== "GET") { res.writeHead(404); res.end("Not found"); return; }
 
+  if (pathname === "/" || pathname === "/index.html") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+    res.end(PAGE);
+    return;
+  }
   if (pathname === "/ping") {
     res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
     res.end("ok");
