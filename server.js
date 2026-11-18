@@ -39,13 +39,13 @@ process.on("unhandledRejection", e => log("UNHANDLED_REJECTION", e && e.stack ? 
 // ── buffers: one slot per second, -1 = empty ──
 let activeDayEpoch = calcDayEpoch(nowSec());
 const dayTicks = {}, preTicks = {}, lastTickTime = {};
-const filled = {}, liveN = {}, bfN = {};
+const filled = {}, liveN = {}, bfN = {}, bfPending = {};
 let totalLive = 0, totalBf = 0;
 for (const p of ALL_PAIRS) {
   dayTicks[p] = new Float64Array(DAY_SECS).fill(-1);
   preTicks[p] = new Float64Array(PRE_ROLL_SECS).fill(-1);
   lastTickTime[p] = null;
-  filled[p] = liveN[p] = bfN[p] = 0;
+  filled[p] = liveN[p] = bfN[p] = bfPending[p] = 0;
 }
 
 function checkRollover() {
@@ -180,6 +180,8 @@ async function runBackfill(reason, forceFromSec) {
   if (!queue.length) { log("BACKFILL_COMPLETE", `complete (${reason}) - 0 missing chunks`); return; }
   backfillState = { active: true, pct: 0, doneChunks: 0, totalChunks: queue.length, currentPair: queue[0].pair, reason };
   log("BACKFILL_START", `start (${reason}): ${queue.length} chunks`);
+  for (const p of ALL_PAIRS) bfPending[p] = 0;
+  for (const q of queue) bfPending[q.pair]++;
   const closed = {};
   let cursor = 0;
   const slot = async n => {
@@ -200,6 +202,7 @@ async function runBackfill(reason, forceFromSec) {
         if (res.ok && t.e < targetDay) preBackfillDay[t.pair] = targetDay;
         await sleep(300);
       }
+      if (bfPending[t.pair] > 0) bfPending[t.pair]--;
       backfillState.doneChunks++;
       backfillState.pct = Math.min(100, Math.round(backfillState.doneChunks / backfillState.totalChunks * 100));
     }
@@ -207,6 +210,7 @@ async function runBackfill(reason, forceFromSec) {
   await Promise.all(Array.from({ length: BACKFILL_CONCURRENCY }, (_, i) => slot(i)));
   backfillState = { active: false, pct: 100, doneChunks: backfillState.doneChunks, totalChunks: queue.length, currentPair: null, reason: null };
   backfillSeq++;
+  for (const p of ALL_PAIRS) bfPending[p] = 0;
   log("BACKFILL_COMPLETE", `complete (${reason}) - ${backfillState.doneChunks}/${queue.length} chunks`);
   if (queuedReason) { const next = queuedReason; queuedReason = null; runBackfill(next, null); }
 }
@@ -305,81 +309,58 @@ const PAGE = String.raw`<!doctype html><meta charset=utf-8><meta name=viewport c
 <style>
 *{box-sizing:border-box}
 html,body{height:100%;margin:0;overflow:hidden;background:#0b0f1a;color:#dfe6ff;font:11px/1.3 ui-monospace,Menlo,Consolas,monospace}
-body{display:grid;grid-template-rows:auto 92px minmax(0,1fr);gap:6px;padding:6px;height:100vh;height:100dvh}
-.c{background:#121a2e;border:1px solid #243056;border-radius:6px;padding:5px 8px;min-width:0;overflow:hidden}
-.c i{font-style:normal;color:#8d9ac8;font-size:9px;letter-spacing:.08em;white-space:nowrap}
-.c b{display:block;font-size:15px;line-height:1.2;white-space:nowrap}
-.d{color:#7d8ab5;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.g{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:6px}
-.bar{height:3px;background:#1b2542;border-radius:2px;margin:2px 0}.bar div{height:100%}
-.m{display:grid;grid-template-columns:1fr 1.4fr;gap:6px;min-height:0}
-#sw{position:relative}#sp{position:absolute;left:6px;top:16px;width:calc(100% - 12px);height:calc(100% - 20px)}
-#ev div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:10px}
-#pg{display:grid;gap:4px;grid-auto-rows:1fr;min-height:0}
-.p{border:1px solid #243056;border-radius:4px;padding:2px 6px;overflow:hidden;min-width:0;display:flex;flex-direction:column;justify-content:center;white-space:nowrap}
-.p span{float:right}
+body{display:grid;grid-template-rows:minmax(0,3fr) minmax(0,2fr);gap:6px;padding:6px;height:100vh;height:100dvh}
+#pg{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));grid-auto-rows:44px;gap:4px;overflow:auto;align-content:start}
+.p{border:1px solid #243056;background:#121a2e;border-radius:4px;padding:3px 7px;display:flex;flex-direction:column;justify-content:center;min-width:0;white-space:nowrap;overflow:hidden}
+.p span{font-size:9px;opacity:.8;overflow:hidden;text-overflow:ellipsis}
+.p b{font-size:16px;line-height:1.2}
+#lg{background:#121a2e;border:1px solid #243056;border-radius:6px;padding:6px 8px;overflow:auto;font-size:10px}
+#lg div{white-space:nowrap}
+#lg h6{margin:6px 0 2px;color:#8d9ac8;font-size:9px;letter-spacing:.08em}
 .ok{color:#4ade80}.warn{color:#facc15}.bad{color:#f87171}.dim{color:#7d8ab5}
-@media(max-width:600px){.g{grid-template-columns:repeat(4,1fr)}.c{padding:3px 5px}.c i{font-size:7px}.c b{font-size:12px}.d{font-size:8px}.p{font-size:9px;padding:2px 4px}body{grid-template-rows:auto 70px minmax(0,1fr)}}
 </style>
-<body><div class=g id=cards></div>
-<div class=m><div class=c id=sw><i>LIVE TICKS / SEC (last 5 min)</i><canvas id=sp></canvas></div><div class=c id=ev></div></div>
-<div id=pg></div>
+<body><div id=pg></div><div id=lg></div>
 <script>
 const t = new URLSearchParams(location.search).get('token') || '';
-let prev = null, lr = 0, br = 0, hist = [], np = 37;
+let prev = null, lr = 0, br = 0;
 const f = n => Number(n).toLocaleString();
-const k = n => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e4 ? (n / 1e3).toFixed(1) + 'k' : n;
 const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
-const card = (n, v, d, pct, col) => '<div class=c><i>' + n + '</i><b>' + v + '</b>' + (pct == null ? '' : '<div class=bar><div style="width:' + Math.min(100, Math.max(0, pct)) + '%;background:' + (col || '#2dd4bf') + '"></div></div>') + '<div class=d>' + (d || '&nbsp;') + '</div></div>';
 const dur = s => { s = Math.max(0, Math.round(s)); return Math.floor(s / 3600) + 'h ' + Math.floor(s % 3600 / 60) + 'm ' + (s % 60) + 's'; };
-function fit() {
-  const r = pg.getBoundingClientRect(), m = innerWidth < 600, mw = m ? 115 : 150, mh = m ? 26 : 30;
-  let best = 1, bs = -1e9, c, rows, cw, ch, sc;
-  for (c = 1; c <= 12; c++) {
-    rows = Math.ceil(np / c); cw = (r.width - (c - 1) * 4) / c; ch = (r.height - (rows - 1) * 4) / rows;
-    sc = (cw >= mw && ch >= mh) ? 100 - Math.abs(Math.log(cw / ch / 4)) : Math.min(cw / mw, ch / mh);
-    if (sc > bs) { bs = sc; best = c; }
-  }
-  pg.style.gridTemplateColumns = 'repeat(' + best + ',minmax(0,1fr))';
-}
-addEventListener('resize', fit);
+const ln = (k, v) => '<div><span class=dim>' + k + '</span> ' + v + '</div>';
 async function go() {
   try {
     const r = await fetch('/status?token=' + encodeURIComponent(t), { cache: 'no-store' });
-    if (r.status === 401) { cards.innerHTML = card('AUTH', '401', 'open as /?token=YOUR_TOKEN'); return; }
-    const j = await r.json(), now = Date.now() / 1000, b = j.backfill, left = j.activeDayEpoch + 86400 - now;
+    if (r.status === 401) { lg.innerHTML = '<div class=bad>401 unauthorized - open as /?token=YOUR_TOKEN</div>'; return; }
+    const j = await r.json(), now = Date.now() / 1000, b = j.backfill, left = j.activeDayEpoch + 86400 - now, bp = j.bfPending || {};
     if (prev && now > prev.t) {
       const dt = now - prev.t, inst = Math.max(0, (b.doneChunks - prev.chunks) / dt);
       lr = Math.max(0, (j.totalLive - prev.live) / dt);
       br = br ? br * 0.7 + inst * 0.3 : inst;
-      hist.push(lr); if (hist.length > 150) hist.shift();
     }
     prev = { t: now, live: j.totalLive, chunks: b.doneChunks };
     const st = j.feedState, sc = st === 'LIVE' ? 'ok' : st === 'BACKFILLING' ? 'warn' : 'bad';
     const eta = b.active && br > 0 ? dur((b.totalChunks - b.doneChunks) / br) : '-';
-    cards.innerHTML =
-      card('FEED', '<span class=' + sc + '>' + st + '</span>', 'WS ' + (j.wsConnected ? 'up' : 'DOWN') + ' | subs ' + j.subscribedCount + '/' + j.totalPairs) +
-      card('UPTIME', dur(j.uptime), 'backfill runs done ' + j.backfillSeq) +
-      card('MEMORY', j.rssMB + ' MB', 'of 512 MB', j.rssMB / 5.12, j.rssMB > 400 ? '#f87171' : '') +
-      card('CPU', j.cpuPct + '%', 'cap ~10% | lag ' + j.lagMs + 'ms', j.cpuPct * 10, j.cpuPct > 8 ? '#f87171' : '') +
-      card('LIVE TICKS', f(j.totalLive), lr.toFixed(1) + ' / sec (today)') +
-      card('BACKFILLED TICKS', f(j.totalBf), f(b.doneChunks) + ' / ' + f(b.totalChunks) + ' chunks') +
-      card('BACKFILL', b.active ? b.pct + '% ' + b.currentPair : 'idle', br.toFixed(1) + ' chunks/s | ETA ' + eta, b.pct, '#facc15') +
-      card('DAY (05:30 IST)', Math.floor(j.elapsed / 864) + '%', 'reset in ' + dur(left), j.elapsed / 864);
-    sp.width = sp.clientWidth; sp.height = sp.clientHeight;
-    const cx = sp.getContext('2d'), w = sp.width, h = sp.height, mx = Math.max(1, ...hist);
-    cx.clearRect(0, 0, w, h); cx.strokeStyle = '#2dd4bf'; cx.beginPath();
-    hist.forEach((v, i) => { const px = i / 149 * w, py = h - 2 - v / mx * (h - 6); if (i) cx.lineTo(px, py); else cx.moveTo(px, py); });
-    cx.stroke();
-    let cells = ''; np = Object.keys(j.lastTickTime).length;
+    let cells = '', rows = '';
     for (const p in j.lastTickTime) {
-      const a = j.lastTickTime[p], age = a ? now - a : null, cov = j.elapsed ? Math.min(100, j.filled[p] / j.elapsed * 100) : 0;
+      const a = j.lastTickTime[p], age = a ? now - a : null, pend = bp[p] || 0;
+      const cov = j.elapsed ? Math.min(100, j.filled[p] / j.elapsed * 100) : 0;
       const ac = age === null ? 'dim' : age < 10 ? 'ok' : age < 60 ? 'warn' : 'bad';
-      cells += '<div class=p style="background:linear-gradient(90deg,#14343c ' + cov + '%,#121a2e ' + cov + '%)"><div><b>' + p + '</b><span class=' + ac + '>' + (age === null ? '-' : Math.round(age) + 's') + '</span></div><div class=d>L ' + k(j.liveN[p]) + ' B ' + k(j.bfN[p]) + ' ' + cov.toFixed(0) + '%</div></div>';
+      cells += '<div class="p ' + (!j.wsConnected || pend > 0 ? 'bad' : 'ok') + '"><span>' + p + '</span><b>' + f(j.filled[p]) + '</b></div>';
+      rows += ln(p, '<span class=' + ac + '>' + (age === null ? '-' : Math.round(age) + 's') + '</span> L ' + f(j.liveN[p]) + ' B ' + f(j.bfN[p]) + ' pend ' + pend + ' cov ' + cov.toFixed(0) + '%');
     }
-    pg.innerHTML = cells; fit();
-    ev.innerHTML = '<i>EVENTS</i>' + j.recentEvents.slice(-5).reverse().map(e => '<div><span class=dim>' + e.ts.slice(11, 19) + '</span> ' + esc(e.type) + ' ' + esc(e.reason) + '</div>').join('');
-  } catch (e) { cards.innerHTML = card('ERROR', esc(e.message)); }
+    pg.innerHTML = cells;
+    lg.innerHTML = '<h6>STATUS</h6>' +
+      ln('FEED', '<span class=' + sc + '>' + st + '</span> WS ' + (j.wsConnected ? 'up' : 'DOWN') + ' subs ' + j.subscribedCount + '/' + j.totalPairs) +
+      ln('UPTIME', dur(j.uptime) + ' backfill runs ' + j.backfillSeq) +
+      ln('MEMORY', '<span class=' + (j.rssMB > 400 ? 'bad' : 'ok') + '>' + j.rssMB + ' MB</span> of 512 MB') +
+      ln('CPU', '<span class=' + (j.cpuPct > 8 ? 'bad' : 'ok') + '>' + j.cpuPct + '%</span> cap ~10% lag ' + j.lagMs + 'ms') +
+      ln('LIVE TICKS', f(j.totalLive) + ' (' + lr.toFixed(1) + ' / sec)') +
+      ln('BACKFILLED TICKS', f(j.totalBf)) +
+      ln('BACKFILL', b.active ? b.pct + '% ' + b.currentPair + ' ' + f(b.doneChunks) + '/' + f(b.totalChunks) + ' chunks ' + br.toFixed(1) + '/s ETA ' + eta : 'idle') +
+      ln('DAY (05:30 IST)', Math.floor(j.elapsed / 864) + '% reset in ' + dur(left)) +
+      '<h6>PAIRS</h6>' + rows +
+      '<h6>EVENTS</h6>' + j.recentEvents.slice().reverse().map(e => ln(e.ts.slice(11, 19), esc(e.type) + ' ' + esc(e.reason))).join('');
+  } catch (e) { lg.innerHTML = '<div class=bad>ERROR ' + esc(e.message) + '</div>'; }
 }
 go(); setInterval(go, 2000);
 </script>`;
@@ -411,7 +392,7 @@ const server = http.createServer((req, res) => {
       uptime: Math.floor(process.uptime()), lastRestart: startedAtIso, lastRestartEpoch: startedAtEpoch,
       activeDayEpoch, feedState: feedState(), wsConnected, subscribedCount: subscribed.size, totalPairs: ALL_PAIRS.length,
       backfill: backfillState, backfillSeq, serverScan: false, rssMB: Math.round(process.memoryUsage().rss / 1048576),
-      lastTickTime, recentEvents, filled, liveN, bfN, totalLive, totalBf,
+      lastTickTime, recentEvents, filled, liveN, bfN, bfPending, totalLive, totalBf,
       elapsed: Math.min(DAY_SECS, nowSec() - activeDayEpoch + 1), cpuPct: Math.round(cpuPct * 10) / 10, lagMs
     });
     return;
